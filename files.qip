@@ -12,3 +12,11 @@ set_global_assignment -name VERILOG_FILE rtl/cpu/cpu_z80.v
 set_global_assignment -name VERILOG_FILE rtl/cpu/cpu_68k.v
 set_global_assignment -name SYSTEMVERILOG_FILE neogeo.sv
 set_global_assignment -name SDC_FILE NeoGeo.sdc
+set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_top.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_tap.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_ddrmux.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_ddr.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_player.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_adx.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/jtframe_frac_cen.v
+set_global_assignment -name VERILOG_MACRO "NGPLUS=1"

@@ -97,6 +97,7 @@ video_freak video_freak
 // L:	status[12]		CD lid state (DEBUG)
 //  :	status[14]		Manual Reset
 //  :	status[20:15]  OSD options
+// NG+: status[45]    Arranged audio (0 = ON), status[47:46] arranged volume
 // 0123456789 ABCDEFGHIJKLMNO
 
 // Conditional modification of the CONF strings chaining according to chosen system type
@@ -165,6 +166,9 @@ localparam CONF_STR = {
 	"P1o78,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"P1-;",
 	"P1O56,Stereo Mix,none,25%,50%,100%;",
+	"P1-;",
+	"H0P1oD,Arranged Audio (NG+),ON,OFF;",
+	"H0P1oEF,Arranged Volume,100%,75%,50%,150%;",
 	"P1-;",
 	"-;",
 	"RE,Reset & apply;",  // decouple manual reset from system reset 
@@ -466,6 +470,7 @@ wire [15:0] SDA, Z80_SDA;
 wire nSDRD, nSDWR, nMREQ, nIORQ, nBUSAK;
 wire Z80_nSDRD, Z80_nSDWR, Z80_nMREQ;
 wire Z80_nINT, Z80_nNMI, nSDW, nSDZ80R, nSDZ80W, nSDZ80CLR;
+wire z80_nSDW;	// NG+: NMI-gated copy of nSDW for z80ctrl (== nSDW while NG+ is inactive)
 wire nSDROM, nSDMRD, nSDMWR, SDRD0, SDRD1, nZRAMCS;
 wire n2610CS, n2610RD, n2610WR;
 
@@ -1103,7 +1108,7 @@ neo_d0 D0(
 	.SDA_H(SDA[15:11]), .SDA_L(SDA[4:2]),
 	.nSDRD(nSDRD),	.nSDWR(nSDWR), .nMREQ(nMREQ),	.nIORQ(nIORQ),
 	.nZ80NMI(Z80_nNMI),
-	.nSDW(nSDW), .nSDZ80R(nSDZ80R), .nSDZ80W(nSDZ80W),	.nSDZ80CLR(nSDZ80CLR),
+	.nSDW(z80_nSDW), .nSDZ80R(nSDZ80R), .nSDZ80W(nSDZ80W),	.nSDZ80CLR(nSDZ80CLR),
 	.nSDROM(nSDROM), .nSDMRD(nSDMRD), .nSDMWR(nSDMWR), .nZRAMCS(nZRAMCS),
 	.SDRD0(SDRD0),	.SDRD1(SDRD1),
 	.n2610CS(n2610CS), .n2610RD(n2610RD), .n2610WR(n2610WR),
@@ -1770,8 +1775,29 @@ reg [27:0] ddr_waddr;
 reg [15:0] ddr_wr_din;
 reg ddr_we_byte;
 
+`ifdef NGPLUS
+// NG+: the core's DDRAM master goes through ngplus_ddrmux (below) so the
+// pack loader/player can share the port as a lowest-priority read client
+wire  [7:0] ngp_core_burstcnt;
+wire [28:0] ngp_core_addr;
+wire        ngp_core_rd, ngp_core_we, ngp_core_busy, ngp_core_dout_ready;
+wire  [7:0] ngp_core_be;
+wire [63:0] ngp_core_din;
+ddram DDRAM(
+	.DDRAM_CLK(DDRAM_CLK),
+	.DDRAM_BUSY(ngp_core_busy),
+	.DDRAM_BURSTCNT(ngp_core_burstcnt),
+	.DDRAM_ADDR(ngp_core_addr),
+	.DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(ngp_core_dout_ready),
+	.DDRAM_RD(ngp_core_rd),
+	.DDRAM_DIN(ngp_core_din),
+	.DDRAM_BE(ngp_core_be),
+	.DDRAM_WE(ngp_core_we),
+`else
 ddram DDRAM(
 	.*,
+`endif
 	
 	.cache_reset(~nRESET),
 
@@ -1848,11 +1874,27 @@ wire [26:0] cp_offset =
 	(cp_idx >= INDEX_VROMS)   ? ({cp_idx[7:0]-INDEX_VROMS[7:0], 19'h00000}) :
 										 27'd0;
 
+`ifdef NGPLUS
+// NG+: the arranged-audio pack is the last <file> of the game's romsets.xml
+// entry, with a spare index the cart loader never maps.  The stock loader
+// stages it whole at 0x38000000 and sends the usual copy record; the fork
+// keeps it in DDR (header at 0x38040000, behind a 256 KiB pad for the
+// system ROM / SFIX staged after it) and never copies it to SDRAM.
+localparam [7:0] NGP_PACK_INDEX = 8'd12;
+reg ngp_pack_valid = 0;
+reg ngp_ioctl_dl_d = 0;
+`endif
 reg memcp_req = 0;
 reg memcp_ack = 0;
 wire memcp_wait = (memcp_req != memcp_ack);
 
 always @(posedge clk_sys) begin
+`ifdef NGPLUS
+	// a direct load (.neo, index 1) bypasses the copy records: drop the pack
+	ngp_ioctl_dl_d <= ioctl_download;
+	if (ioctl_download && !ngp_ioctl_dl_d && ioctl_index == INDEX_LOROM) ngp_pack_valid <= 0;
+	if (RESET) ngp_pack_valid <= 0;
+`endif
 	if(ioctl_download && ioctl_index == INDEX_MEMCP) begin
 		if(ioctl_wr) begin
 			case(ioctl_addr[3:0])
@@ -1863,7 +1905,19 @@ always @(posedge clk_sys) begin
 						cp_addr     <= cp_offset;
 						cp_end      <= cp_offset + {ioctl_dout[10:0], cp_size[15:0]};
 					end
-				6: if(ioctl_dout && cp_op) memcp_req <= ~memcp_req;
+				6: if(ioctl_dout && cp_op) begin
+`ifdef NGPLUS
+						if (cp_idx == NGP_PACK_INDEX) ngp_pack_valid <= 1;
+						else begin
+							// any other record but the BIOS pair staged after the
+							// pack (system ROM, SFIX) means a new ROM set: drop it
+							if (cp_idx != INDEX_SPROM && cp_idx != INDEX_SFIXROM) ngp_pack_valid <= 0;
+							memcp_req <= ~memcp_req;
+						end
+`else
+						memcp_req <= ~memcp_req;
+`endif
+					end
 			endcase
 
 			if(~cp_op) begin
@@ -1931,8 +1985,129 @@ jt10 YM2610(
 	.snd_right(snd_right), .snd_left(snd_left), .snd_enable(~{4{dbg_menu}} | ~status[28:25]), .ch_enable(~status[62:57])
 );
 
+`ifdef NGPLUS
+//////////////////   NG+ arranged audio   ///////////////////
+// Arranged (Neo Geo CD) soundtrack for cartridge games, played from a CPS+
+// pack in DDR.  Contract: ngplus/RTL_CONTRACT.md (capcom repo).  Everything
+// game-specific is pack data; with no pack staged this block is inert.
+localparam [31:0] NGP_PACK_BASE = 32'h3804_0000;	// staging + 256 KiB pad
+
+wire       ngp_osd_on = ~status[45];				// OSD: Arranged Audio ON/OFF
+wire [1:0] ngp_vol    = status[47:46];			// OSD: Arranged Volume
+
+// ---- pack presence / boot (96 MHz).  The pack arrives while the core is in
+// reset (ROM download); the loader boots after every reset release while a
+// pack is staged, and fails open on a bad magic (new set staged over it).
+reg  [2:0] ngp_rst_s;
+reg  [1:0] ngp_valid_s;
+reg  [4:0] ngp_boot_cnt;
+reg        ngp_boot_go;
+wire       ngp_rst = ngp_rst_s[2];
+always @(posedge CLK_96M) begin
+	ngp_rst_s   <= {ngp_rst_s[1:0], ~nRESET};
+	ngp_valid_s <= {ngp_valid_s[0], ngp_pack_valid};
+	ngp_boot_go <= 0;
+	if (ngp_rst) ngp_boot_cnt <= 5'd16;
+	else if (ngp_boot_cnt != 0) begin
+		ngp_boot_cnt <= ngp_boot_cnt - 1'd1;
+		if (ngp_boot_cnt == 5'd1 && ngp_valid_s[1]) ngp_boot_go <= 1;
+	end
+end
+
+// ---- REG_SOUND write tap (96 MHz): nSDW falling edge = write start; two
+// clks later the NEO-C1 latch (captured on CLK_48M) holds the byte.
+reg  [2:0] ngp_sdw_s;
+reg  [1:0] ngp_stb_dly;
+reg        ngp_wr_stb;
+reg  [7:0] ngp_wr_byte;
+always @(posedge CLK_96M) begin
+	ngp_sdw_s   <= {ngp_sdw_s[1:0], nSDW};
+	ngp_stb_dly <= {ngp_stb_dly[0], ngp_sdw_s[2] & ~ngp_sdw_s[1]};
+	ngp_wr_stb  <= ngp_stb_dly[1] & ~SYSTEM_CDx;
+	ngp_wr_byte <= SDD_RD_C1;
+end
+
+// ---- fade tick: vblank start
+reg  [2:0] ngp_vbl_s;
+reg        ngp_cen_frame;
+always @(posedge CLK_96M) begin
+	ngp_vbl_s     <= {ngp_vbl_s[1:0], nBNKB};
+	ngp_cen_frame <= ngp_vbl_s[2] & ~ngp_vbl_s[1];
+end
+
+wire signed [15:0] ngp_audio_l, ngp_audio_r;
+wire        ngp_gate, ngp_gate_vld, ngp_ready, ngp_magic_ok, ngp_playing, ngp_sample_vld;
+wire  [3:0] ngp_status;
+wire  [7:0] ngp_last_cmd;
+wire        ngp_last_mapped;
+wire  [7:0] ngp_pk_burstcnt;
+wire [28:0] ngp_pk_addr;
+wire        ngp_pk_rd, ngp_pk_busy, ngp_pk_dout_ready;
+
+ngplus_top #(.XF_LUT_FILE("rtl/ngplus/cpsplus_xf_lut.hex")) NGPLUS (
+	.rst(ngp_rst), .clk(CLK_96M),
+	.wr_stb(ngp_wr_stb), .wr_byte(ngp_wr_byte),
+	.gate(ngp_gate), .gate_vld(ngp_gate_vld),
+	.cen_frame(ngp_cen_frame), .osd_pause(1'b0), .vol(ngp_vol),
+	.audio_l(ngp_audio_l), .audio_r(ngp_audio_r),
+	.sample_vld(ngp_sample_vld), .playing(ngp_playing),
+	.base_addr(NGP_PACK_BASE), .osd_en(ngp_osd_on & ngp_valid_s[1]), .boot_go(ngp_boot_go),
+	.ready(ngp_ready), .magic_ok(ngp_magic_ok), .status(ngp_status),
+	.last_cmd(ngp_last_cmd), .last_mapped(ngp_last_mapped),
+	.ddram_busy(ngp_pk_busy), .ddram_burstcnt(ngp_pk_burstcnt), .ddram_addr(ngp_pk_addr),
+	.ddram_dout(DDRAM_DOUT), .ddram_dout_ready(ngp_pk_dout_ready), .ddram_rd(ngp_pk_rd)
+);
+
+// Reset only with the HPS reset: a core reset mid-burst must not switch the
+// port owner while beats are still in flight (the mux drains them).
+ngplus_ddrmux NGP_DDRMUX (
+	.rst(RESET), .clk(DDRAM_CLK),
+	.core_burstcnt(ngp_core_burstcnt), .core_addr(ngp_core_addr),
+	.core_rd(ngp_core_rd), .core_we(ngp_core_we), .core_be(ngp_core_be), .core_din(ngp_core_din),
+	.core_busy(ngp_core_busy), .core_dout_ready(ngp_core_dout_ready),
+	.pk_burstcnt(ngp_pk_burstcnt), .pk_addr(ngp_pk_addr), .pk_rd(ngp_pk_rd),
+	.pk_busy(ngp_pk_busy), .pk_dout_ready(ngp_pk_dout_ready),
+	.ddr_busy(DDRAM_BUSY), .ddr_dout_ready(DDRAM_DOUT_READY),
+	.ddr_burstcnt(DDRAM_BURSTCNT), .ddr_addr(DDRAM_ADDR), .ddr_rd(DDRAM_RD),
+	.ddr_we(DDRAM_WE), .ddr_be(DDRAM_BE), .ddr_din(DDRAM_DIN)
+);
+
+// ---- Z80 NMI gate (CLK_48M).  z80ctrl raises the NMI on the rising edge of
+// nSDW (write end).  While NG+ is active the Z80 sees a synthesized 1-clk
+// pulse 8 clks after each write end instead, dropped when the tap flagged
+// the byte as suppressed arranged music (the C1 latch still captures it; the
+// driver only reads the latch inside its NMI handler).  Timing budget: the
+// tap settles ~5 clk48 after the write start, a write holds nSDW low >= 12
+// clk48, the next REG_SOUND write is >= 16 clk48 after this one's end.
+reg        ngp_nSDW_q;
+reg  [7:0] ngp_tok;
+reg  [1:0] ngp_gate_s, ngp_ready_s;
+reg        ngp_pulse, ngp_active_q;
+wire       ngp_active = ngp_ready_s[1] & ngp_osd_on & ~SYSTEM_CDx;
+always @(posedge CLK_48M) begin
+	ngp_nSDW_q  <= nSDW;
+	ngp_tok     <= {ngp_tok[6:0], nSDW & ~ngp_nSDW_q};	// write-end token
+	ngp_gate_s  <= {ngp_gate_s[0], ngp_gate};
+	ngp_ready_s <= {ngp_ready_s[0], ngp_ready};
+	ngp_pulse   <= ngp_tok[7] & ~ngp_gate_s[1];
+	// switch the NMI source only while the channel is idle: no spurious edge
+	if (nSDW & ngp_nSDW_q & ~ngp_pulse & ~|ngp_tok) ngp_active_q <= ngp_active;
+end
+assign z80_nSDW = ngp_active_q ? ~ngp_pulse : nSDW;
+
+// ---- mixer: three terms, saturated to the 17-bit mix the core halves
+function [16:0] ngp_sat17(input signed [17:0] x);
+	ngp_sat17 = (x > 18'sd65535) ? 17'h0ffff : (x < -18'sd65536) ? 17'h10000 : x[16:0];
+endfunction
+wire signed [17:0] ngp_sum_l = $signed({snd_left[15],  snd_left})  + $signed({CD_AUDIO_L[15], CD_AUDIO_L}) + $signed({ngp_audio_l[15], ngp_audio_l});
+wire signed [17:0] ngp_sum_r = $signed({snd_right[15], snd_right}) + $signed({CD_AUDIO_R[15], CD_AUDIO_R}) + $signed({ngp_audio_r[15], ngp_audio_r});
+wire [16:0] snd_mix_l = ngp_sat17(ngp_sum_l);
+wire [16:0] snd_mix_r = ngp_sat17(ngp_sum_r);
+`else
+assign z80_nSDW = nSDW;
 wire [16:0] snd_mix_l = $signed(snd_left) + $signed(CD_AUDIO_L);
 wire [16:0] snd_mix_r = $signed(snd_right) + $signed(CD_AUDIO_R);
+`endif
 
  
 // For Neo CD only

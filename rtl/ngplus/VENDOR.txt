@@ -1,0 +1,3 @@
+vendored 2026-09-11T18:16Z
+capcom  796e44f2  ngplus/rtl
+jtcores b9bb1fe56  modules/cpsplus/hdl, modules/jtframe/hdl/clocking
