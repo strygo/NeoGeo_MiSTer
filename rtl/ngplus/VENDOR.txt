@@ -1,3 +1,4 @@
 vendored 2026-09-11T18:16Z
 capcom  796e44f2  ngplus/rtl
-jtcores b9bb1fe56  modules/cpsplus/hdl, modules/jtframe/hdl/clocking
+capcom  796e44f2  cpsplus/rtl (cpsplus_ddr/player/adx, xf_lut)
+jtcores b9bb1fe56  modules/jtframe/hdl/clocking/jtframe_frac_cen.v
