@@ -11,9 +11,10 @@
     and the pack master runs only while the core is quiet.
 
     ADPCM deadline (neogeo.sv ADPCMA_ACK_COUNTER = 128 DDRAM_CLK): a pack
-    burst is at most 8 beats, so the core's next request waits < ~40 clk
-    including DDR latency, inside the deadline.  The player prefetches
-    2x64 B, so the pack side tolerates the core's 128-beat memcp bursts.
+    burst is at most 8 beats (< ~40 clk with DDR latency), and while an
+    ADPCM-A/B fetch is pending (`core_urgent`) no pack burst is started at
+    all, so the YM2610 fetch never queues behind the pack.  The player
+    prefetches 2x64 B, so the pack side tolerates the wait.
 
     Verilog-2005.
 */
@@ -29,6 +30,7 @@ module ngplus_ddrmux(
     input          core_we,
     input   [ 7:0] core_be,
     input   [63:0] core_din,
+    input          core_urgent,     // a deadline-bound core fetch is pending: do not start a pack burst
     output         core_busy,
     output         core_dout_ready,
 
@@ -76,7 +78,7 @@ always @(posedge clk, posedge rst) begin
         // the image writer (load time only), then the pack reader
         if( beats == 9'd0 && !ddr_rd && !ddr_we && !ddr_busy ) begin
             pw_en <= !core_req && pw_we;
-            pk_en <= !core_req && !pw_we && pk_rd;
+            pk_en <= !core_req && !core_urgent && !pw_we && pk_rd;
         end
     end
 end

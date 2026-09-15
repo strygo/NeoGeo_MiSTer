@@ -2183,6 +2183,7 @@ ngplus_ddrmux NGP_DDRMUX (
 	.rst(RESET), .clk(DDRAM_CLK),
 	.core_burstcnt(ngp_core_burstcnt), .core_addr(ngp_core_addr),
 	.core_rd(ngp_core_rd), .core_we(ngp_core_we), .core_be(ngp_core_be), .core_din(ngp_core_din),
+	.core_urgent((ADPCMA_READ_REQ ^ ADPCMA_READ_ACK) | (ADPCMB_READ_REQ ^ ADPCMB_READ_ACK)),
 	.core_busy(ngp_core_busy), .core_dout_ready(ngp_core_dout_ready),
 	.pk_burstcnt(ngp_pk_burstcnt), .pk_addr(ngp_pk_addr), .pk_rd(ngp_pk_rd),
 	.pk_busy(ngp_pk_busy), .pk_dout_ready(ngp_pk_dout_ready),
