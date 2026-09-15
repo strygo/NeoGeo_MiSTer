@@ -119,9 +119,10 @@ video_freak video_freak
 `include "build_id.v"
 `ifdef NGPLUS
 // NG+: its own core name (the firmware treats it as a generic core: plain
-// file entries, own folders); the game arrives as a kit-built .nga image
+// file entries, games/NG+ and saves/NG+ like CPS+); the game arrives as a
+// kit-built .nga image
 localparam CONF_STR = {
-	"NGPLUS;;",
+	"NG+;;",
 	"-;",
 	"F1,NGA,Load Game;",
 	"F2,CPK,Load Arranged Pack;",
