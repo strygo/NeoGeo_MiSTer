@@ -3,8 +3,9 @@
 
     The stock core has one DDR3 master (rtl/mem/ddram.sv: V ROM / M1 live
     reads, the legacy ioctl write path, and the memcp burst engine).  NG+
-    adds the CPS+ pack loader/player as a second, read-only, LOWEST
-    priority master.  Modelled on jtframe_mr_ddrmux's CPS+ branch: the
+    adds the CPS+ pack loader/player as a read-only LOWEST priority master
+    and the image writer (ngplus_ddrwr, load time only, single-beat 64-bit
+    writes) between them.  Modelled on jtframe_mr_ddrmux's CPS+ branch: the
     grant switches only on burst boundaries (outstanding read beats are
     tracked), the core master is granted whenever it has a request pending,
     and the pack master runs only while the core is quiet.
@@ -38,6 +39,13 @@ module ngplus_ddrmux(
     output         pk_busy,
     output         pk_dout_ready,
 
+    // image writer (ngplus_ddrwr), single-beat 64-bit writes
+    input          pw_we,
+    input   [28:0] pw_addr,
+    input   [63:0] pw_din,
+    input   [ 7:0] pw_be,
+    output         pw_busy,
+
     // DDR pins
     input          ddr_busy,
     input          ddr_dout_ready,
@@ -49,34 +57,40 @@ module ngplus_ddrmux(
     output  [63:0] ddr_din
 );
 
-reg        pk_en;
+reg        pk_en, pw_en;
 reg [ 8:0] beats;                 // outstanding beats of the accepted read
 wire       core_req = core_rd | core_we;
 
 always @(posedge clk, posedge rst) begin
     if( rst ) begin
         pk_en <= 1'b0;
+        pw_en <= 1'b0;
         beats <= 9'd0;
     end else begin
         if( ddr_rd && !ddr_busy )
             beats <= {1'b0, ddr_burstcnt};
+        // a write is a single beat, accepted when !busy: nothing outstanding
         else if( ddr_dout_ready && beats != 9'd0 )
             beats <= beats - 9'd1;
-        // switch owner only when nothing is in flight
-        if( beats == 9'd0 && !ddr_rd && !ddr_we && !ddr_busy )
-            pk_en <= !core_req && pk_rd;
+        // switch owner only when nothing is in flight; the core first, then
+        // the image writer (load time only), then the pack reader
+        if( beats == 9'd0 && !ddr_rd && !ddr_we && !ddr_busy ) begin
+            pw_en <= !core_req && pw_we;
+            pk_en <= !core_req && !pw_we && pk_rd;
+        end
     end
 end
 
-assign ddr_burstcnt   = pk_en ? pk_burstcnt : core_burstcnt;
-assign ddr_addr       = pk_en ? pk_addr     : core_addr;
-assign ddr_rd         = pk_en ? pk_rd       : core_rd;
-assign ddr_we         = pk_en ? 1'b0        : core_we;
-assign ddr_be         = pk_en ? 8'hff       : core_be;
-assign ddr_din        = pk_en ? 64'd0       : core_din;
+assign ddr_burstcnt   = pw_en ? 8'd1    : pk_en ? pk_burstcnt : core_burstcnt;
+assign ddr_addr       = pw_en ? pw_addr : pk_en ? pk_addr     : core_addr;
+assign ddr_rd         = pw_en ? 1'b0    : pk_en ? pk_rd       : core_rd;
+assign ddr_we         = pw_en ? pw_we   : pk_en ? 1'b0        : core_we;
+assign ddr_be         = pw_en ? pw_be   : pk_en ? 8'hff       : core_be;
+assign ddr_din        = pw_en ? pw_din  : pk_en ? 64'd0       : core_din;
 
-assign core_busy       = pk_en | ddr_busy;
+assign core_busy       = pk_en | pw_en | ddr_busy;
 assign pk_busy         = ~pk_en | ddr_busy;
+assign pw_busy         = ~pw_en | ddr_busy;
 assign core_dout_ready = ddr_dout_ready & ~pk_en;
 assign pk_dout_ready   = ddr_dout_ready &  pk_en;
 

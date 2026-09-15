@@ -324,6 +324,8 @@ reg SYSTEM_TYPE, SYSTEM_CD_TYPE;
 reg nRESET_CORE;
 wire ngp_loading;   // NG+: game image streaming (hold reset); 0 in the stock build
 wire ngp_is_pack;   // NG+: virtual ioctl index 0xff = pack words (DDR pack window)
+wire ngp_img_start; // NG+: image load begins (reset masks / C base like status[0])
+wire ngp_wait;      // NG+: router segment switch or DDR writer back-pressure
 always @(posedge CLK_48M) begin
 	reg rst_n;
 	reg got_rom_write = 0;
@@ -441,7 +443,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_idx),
 `endif
-	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait),
+	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait | ngp_wait),
 
 	.sd_lba(sd_lba),
 	.sd_rd(sd_rd),
@@ -470,20 +472,24 @@ wire  [4:0] ngp_dbg_region;
 ngplus_router NGP_ROUTER (
 	.clk(clk_sys), .rst(RESET), .bios_uni(~status[22]),
 	.hps_download(hps_ioctl_download), .hps_index(hps_ioctl_idx), .hps_wr(hps_ioctl_wr),
-	.hps_addr(hps_ioctl_addr), .hps_dout(hps_ioctl_dout),
+	.hps_addr(hps_ioctl_addr), .hps_dout(hps_ioctl_dout), .v_wait(ngp_v_wait),
 	.v_download(ioctl_download), .v_index(ioctl_idx), .v_wr(ioctl_wr),
-	.v_addr(ioctl_addr), .v_dout(ioctl_dout),
-	.img_done(ngp_img_done), .pack_present(ngp_pack_present), .v_paddr(ngp_paddr),
+	.v_addr(ioctl_addr), .v_dout(ioctl_dout), .v_paddr(ngp_paddr),
+	.img_start(ngp_img_start), .img_done(ngp_img_done), .pack_present(ngp_pack_present),
 	.dbg_cfg(ngp_dbg_cfg), .dbg_region(ngp_dbg_region)
 );
+wire ngp_v_wait, ngp_wr_busy;
 assign ngp_loading = hps_ioctl_download & (hps_ioctl_idx == 8'd1);
 assign ngp_is_pack = (ioctl_index == 8'hff);
+assign ngp_wait    = ngp_v_wait | ngp_wr_busy;
 `else
 reg [7:0] ioctl_index;
 always @(posedge clk_sys) ioctl_index <= ioctl_idx;
 wire [27:0] ngp_paddr = 28'd0;
-assign ngp_loading = 1'b0;
-assign ngp_is_pack = 1'b0;
+assign ngp_loading   = 1'b0;
+assign ngp_is_pack   = 1'b0;
+assign ngp_img_start = 1'b0;
+assign ngp_wait      = 1'b0;
 `endif
 
 reg dbg_menu = 0;
@@ -980,7 +986,7 @@ always_ff @(posedge clk_sys) begin
 
 	if(ioctl_wr) begin
 			  if(ioctl_index >= INDEX_CROMS && !ngp_is_pack)  CROM_MASK  <= CROM_MASK  | CROM_LOAD_ADDR;
-		else if(ioctl_index >= INDEX_VROMS) begin
+		else if(ioctl_index >= INDEX_VROMS && !ngp_is_pack) begin
 			if(~VROM_LOAD_ADDR[24]) 			 V1ROM_MASK <= V1ROM_MASK | VROM_LOAD_ADDR;
 			else  									 V2ROM_MASK <= V2ROM_MASK | VROM_LOAD_ADDR;
 		end
@@ -1011,7 +1017,7 @@ always_ff @(posedge clk_sys) begin
 		end
 	end
 
-	if(~old_rst & status[0]) begin
+	if((~old_rst & status[0]) | ngp_img_start) begin
 		CROM_MASK  <= 0;
 		V1ROM_MASK <= 0;
 		V2ROM_MASK <= 0;
@@ -1770,8 +1776,29 @@ reg adpcm_wr, adpcm_rd;
 reg old_download, old_reset, old_CD_TR_WR_PCM;
 wire adpcm_wrack, adpcm_rdack;
 
-wire ddr_loading = ioctl_download & (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM) | ngp_is_pack);
+`ifdef NGPLUS
+// NG+: V ROMs, M1 and the pack are written by ngplus_ddrwr (64-bit words,
+// one handshake per four ioctl words); the per-word path below stays idle
 localparam [27:0] NGP_PACK_REL = 28'h3000000;   // pack window 0x33000000 relative to the DDR base
+wire        ngp_ddr_word = ioctl_download & ioctl_wr &
+                           (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM) | ngp_is_pack);
+wire [27:0] ngp_ddr_addr = ngp_is_pack ? (NGP_PACK_REL + ngp_paddr) :
+                           (ioctl_index == INDEX_M1ROM) ? {3'b001, ioctl_addr[24:0]} : {1'b0, VROM_LOAD_ADDR};
+reg         ngp_hps_dl_d;
+always @(posedge clk_sys) ngp_hps_dl_d <= hps_ioctl_download;
+wire        ngp_pw_we, ngp_pw_busy;
+wire [28:0] ngp_pw_addr;
+wire [63:0] ngp_pw_din;
+wire  [7:0] ngp_pw_be;
+ngplus_ddrwr NGP_DDRWR (
+	.clk(clk_sys), .rst(RESET), .wr(ngp_ddr_word), .addr(ngp_ddr_addr), .din(ioctl_dout),
+	.flush(ngp_hps_dl_d & ~hps_ioctl_download), .busy(ngp_wr_busy),
+	.dclk(DDRAM_CLK), .drst(RESET), .d_we(ngp_pw_we), .d_addr(ngp_pw_addr), .d_din(ngp_pw_din), .d_be(ngp_pw_be), .d_busy(ngp_pw_busy)
+);
+wire ddr_loading = 1'b0;
+`else
+wire ddr_loading = ioctl_download & (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM));
+`endif
 reg ddram_wait = 0;
 reg ddram_dtack;
 
@@ -1795,7 +1822,7 @@ begin
 	if (ddr_loading & ioctl_wr) begin
 		ddram_wait <= 1;
 		adpcm_wr <= ~adpcm_wr;
-		ddr_waddr <= ngp_is_pack ? (NGP_PACK_REL + ngp_paddr) : (ioctl_index == INDEX_M1ROM) ? {1'b1,ioctl_addr[24:0]} : VROM_LOAD_ADDR;
+		ddr_waddr <= (ioctl_index == INDEX_M1ROM) ? {1'b1,ioctl_addr[24:0]} : VROM_LOAD_ADDR;
 		ddr_wr_din <= ioctl_dout;
 		ddr_we_byte <= 0;
 	end else if (~old_CD_TR_WR_PCM & CD_TR_WR_PCM) begin // CD write to PCM
@@ -2155,6 +2182,7 @@ ngplus_ddrmux NGP_DDRMUX (
 	.core_busy(ngp_core_busy), .core_dout_ready(ngp_core_dout_ready),
 	.pk_burstcnt(ngp_pk_burstcnt), .pk_addr(ngp_pk_addr), .pk_rd(ngp_pk_rd),
 	.pk_busy(ngp_pk_busy), .pk_dout_ready(ngp_pk_dout_ready),
+	.pw_we(ngp_pw_we), .pw_addr(ngp_pw_addr), .pw_din(ngp_pw_din), .pw_be(ngp_pw_be), .pw_busy(ngp_pw_busy),
 	.ddr_busy(DDRAM_BUSY), .ddr_dout_ready(DDRAM_DOUT_READY),
 	.ddr_burstcnt(DDRAM_BURSTCNT), .ddr_addr(DDRAM_ADDR), .ddr_rd(DDRAM_RD),
 	.ddr_we(DDRAM_WE), .ddr_be(DDRAM_BE), .ddr_din(DDRAM_DIN)
