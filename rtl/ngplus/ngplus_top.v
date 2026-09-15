@@ -56,6 +56,12 @@ module ngplus_top #(parameter
     output     [ 3:0] status,
     output reg [ 7:0] last_cmd,
     output reg        last_mapped,
+    // NGPLUS_DBG overlay read-outs (cpsplus_dbg_overlay rows 2/3)
+    output reg [ 2:0] last_verb,
+    output reg        last_ctrl,
+    output     [ 2:0] dbg_fst,
+    output     [ 3:0] dbg_end,
+    output            dbg_fempty,
 
     // DDRAM master (read only; arbitrated by ngplus_ddrmux upstream)
     input             ddram_busy,
@@ -108,10 +114,15 @@ always @(posedge clk) begin
     if( rst_i ) begin
         last_cmd    <= 8'd0;
         last_mapped <= 1'b0;
+        last_verb   <= 3'd0;
+        last_ctrl   <= 1'b0;
     end else if( wr_stb ) begin
         last_cmd    <= wr_byte;
+        last_mapped <= 1'b0;
     end else if( evt_stb ) begin
         last_mapped <= evt_verb != 3'd0;
+        last_verb   <= evt_verb;
+        last_ctrl   <= evt_ctrl;
     end
 end
 
@@ -259,9 +270,9 @@ cpsplus_player #( .XF_LUT_FILE( XF_LUT_FILE ) ) u_player (
     .sample_vld     ( sample_vld    ),
     .playing        ( playing       ),
     .track_done     (               ),
-    .dbg_fst        (               ),
-    .dbg_end        (               ),
-    .dbg_fempty     (               )
+    .dbg_fst        ( dbg_fst       ),
+    .dbg_end        ( dbg_end       ),
+    .dbg_fempty     ( dbg_fempty    )
 );
 
 // OSD volume: 100 / 75 / 50 / 150 %, saturated

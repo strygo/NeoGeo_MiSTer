@@ -17,6 +17,7 @@ set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_tap.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_ddrmux.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_router.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/ngplus_ddrwr.v
+set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_dbg_overlay.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_ddr.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_player.v
 set_global_assignment -name VERILOG_FILE rtl/ngplus/cpsplus_adx.v

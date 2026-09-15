@@ -2154,7 +2154,9 @@ wire signed [15:0] ngp_audio_l, ngp_audio_r;
 wire        ngp_gate, ngp_gate_vld, ngp_ready, ngp_magic_ok, ngp_playing, ngp_sample_vld;
 wire  [3:0] ngp_status;
 wire  [7:0] ngp_last_cmd;
-wire        ngp_last_mapped;
+wire        ngp_last_mapped, ngp_last_ctrl, ngp_dbg_fempty;
+wire  [2:0] ngp_last_verb, ngp_dbg_fst;
+wire  [3:0] ngp_dbg_end;
 wire  [7:0] ngp_pk_burstcnt;
 wire [28:0] ngp_pk_addr;
 wire        ngp_pk_rd, ngp_pk_busy, ngp_pk_dout_ready;
@@ -2169,6 +2171,8 @@ ngplus_top #(.XF_LUT_FILE("rtl/ngplus/cpsplus_xf_lut.hex")) NGPLUS (
 	.base_addr(NGP_PACK_BASE), .osd_en(ngp_osd_on & ngp_valid_s[1]), .boot_go(ngp_boot_go),
 	.ready(ngp_ready), .magic_ok(ngp_magic_ok), .status(ngp_status),
 	.last_cmd(ngp_last_cmd), .last_mapped(ngp_last_mapped),
+	.last_verb(ngp_last_verb), .last_ctrl(ngp_last_ctrl),
+	.dbg_fst(ngp_dbg_fst), .dbg_end(ngp_dbg_end), .dbg_fempty(ngp_dbg_fempty),
 	.ddram_busy(ngp_pk_busy), .ddram_burstcnt(ngp_pk_burstcnt), .ddram_addr(ngp_pk_addr),
 	.ddram_dout(DDRAM_DOUT), .ddram_dout_ready(ngp_pk_dout_ready), .ddram_rd(ngp_pk_rd)
 );
@@ -2364,6 +2368,24 @@ wire [7:0] R8 = R6[6] ? 8'd0 : {R6[5:0],  R6[4:3]};
 wire [7:0] G8 = G6[6] ? 8'd0 : {G6[5:0],  G6[4:3]};
 wire [7:0] B8 = B6[6] ? 8'd0 : {B6[5:0],  B6[4:3]};
 
+`ifdef NGPLUS_DBG
+// NG+ bring-up overlay (the CPS+ one): loader state as a colour block, the
+// last sound-latch byte and whether the pack mapped it, verb / feed / end
+// cause rows.  Debug builds only.
+wire [7:0] R8d, G8d, B8d;
+cpsplus_dbg_overlay #(.CW(8)) NGP_DBG (
+	.clk(CLK_VIDEO), .pxl_cen(ce_pix), .LHBL(~HBlank[0]), .LVBL(nBNKB),
+	.status(ngp_status), .playing(ngp_playing),
+	.last_cmd(ngp_last_cmd), .last_mapped(ngp_last_mapped),
+	.last_verb(ngp_last_verb), .last_ctrl(ngp_last_ctrl),
+	.fst(ngp_dbg_fst), .end_cause(ngp_dbg_end), .fifo_empty(ngp_dbg_fempty),
+	.red_in(R8), .green_in(G8), .blue_in(B8),
+	.red_out(R8d), .green_out(G8d), .blue_out(B8d)
+);
+`else
+wire [7:0] R8d = R8, G8d = G8, B8d = B8;
+`endif
+
 wire [7:0] r,g,b;
 wire hs,vs,hblank,vblank;
 video_cleaner video_cleaner
@@ -2371,9 +2393,9 @@ video_cleaner video_cleaner
 	.clk_vid(CLK_VIDEO),
 	.ce_pix(ce_pix),
 
-	.R(~SHADOW ? R8 : {1'b0, R8[7:1]}),
-	.G(~SHADOW ? G8 : {1'b0, G8[7:1]}),
-	.B(~SHADOW ? B8 : {1'b0, B8[7:1]}),
+	.R(~SHADOW ? R8d : {1'b0, R8d[7:1]}),
+	.G(~SHADOW ? G8d : {1'b0, G8d[7:1]}),
+	.B(~SHADOW ? B8d : {1'b0, B8d[7:1]}),
 
 	.HSync(HSync),
 	.VSync(VSync),

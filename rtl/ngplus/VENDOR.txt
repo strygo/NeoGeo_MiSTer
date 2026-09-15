@@ -1,4 +1,4 @@
-vendored 2026-09-15T20:46Z
-capcom  abbd3e83  ngplus/rtl
-capcom  abbd3e83  cpsplus/rtl (cpsplus_ddr/player/adx, xf_lut)
+vendored 2026-09-15T21:14Z
+capcom  fac2e938  ngplus/rtl
+capcom  fac2e938  cpsplus/rtl (cpsplus_ddr/player/adx, xf_lut)
 jtcores b9bb1fe56  modules/jtframe/hdl/clocking/jtframe_frac_cen.v
