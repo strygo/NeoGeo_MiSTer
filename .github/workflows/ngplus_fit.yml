@@ -1,0 +1,93 @@
+name: NG+ fitter pass
+
+# Fits the stock core and the NG+ core back to back FROM THE SAME TREE and
+# reports the timing/resource delta, so the cost of the tap + player is
+# measured rather than guessed.  NG+ is macro-gated (`NGPLUS`, set in
+# files.qip); the stock leg strips that line before compiling.
+#
+# Each leg is a full Quartus 17.1 compile of the NeoGeo project (the
+# MiSTer framework needs 17.0/17.1): expect ~1 h per leg on a hosted runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Quartus fitter seed (both legs)
+        required: false
+        default: "1"
+      legs:
+        description: 'legs to fit: both, ngplus, or stock'
+        required: false
+        default: "both"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      legs: ${{ steps.pick.outputs.legs }}
+    steps:
+      - id: pick
+        env:
+          LEGS: ${{ inputs.legs }}
+        run: |
+          case "$LEGS" in
+            both|"") legs='["stock","ngplus"]' ;;
+            stock|ngplus) legs="[\"$LEGS\"]" ;;
+            *) echo "unknown legs '$LEGS' (want both|stock|ngplus)" >&2; exit 1 ;;
+          esac
+          echo "legs=$legs" >> "$GITHUB_OUTPUT"
+
+  fitter:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.plan.outputs.legs) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pre-flight -- NG+ file set
+        run: |
+          rc=0
+          for f in $(grep -o 'rtl/ngplus/[A-Za-z0-9_]*\.v' files.qip | sort -u); do
+            [ -f "$f" ] && echo "ok   $f" || { echo "FAIL missing $f" >&2; rc=1; }
+          done
+          grep -q 'NGPLUS=1' files.qip || { echo "FAIL: NGPLUS macro not in files.qip" >&2; rc=1; }
+          exit $rc
+
+      - name: Strip the NGPLUS macro (stock leg)
+        if: matrix.leg == 'stock'
+        run: |
+          sed -i '/VERILOG_MACRO "NGPLUS=1"/d' files.qip
+          sed -i '/rtl\/ngplus\//d' files.qip
+          ! grep -q NGPLUS files.qip
+
+      - name: Quartus 17.1 compile (${{ matrix.leg }})
+        env:
+          SEED: ${{ inputs.seed }}
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -e SEED="$SEED" -v "$PWD":/build -w /build \
+            raetro/quartus:17.1 \
+            bash -c '
+              set -e
+              quartus_sh --set SEED=$SEED NeoGeo
+              quartus_sh --flow compile NeoGeo 2>&1 | tail -40
+              mkdir -p fit_results
+              for f in output_files/*.rbf; do cp "$f" "fit_results/NeoGeoPlus_$(date +%Y%m%d).rbf"; done 2>/dev/null || true
+              cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary fit_results/ 2>/dev/null || true
+              grep -A12 "Slow 1100mV 85C Model Fmax Summary" output_files/NeoGeo.sta.rpt | head -40 > fit_results/fmax.txt || true
+              grep -B2 -A8 "Setup.*Worst-case" output_files/NeoGeo.sta.summary >> fit_results/fmax.txt || true
+              grep -c "Timing requirements not met" output_files/NeoGeo.sta.rpt > fit_results/sta_violations.txt || true
+              cat fit_results/fmax.txt
+            '
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ngplus-fit-${{ matrix.leg }}
+          path: fit_results
+          retention-days: 14
+          if-no-files-found: warn
