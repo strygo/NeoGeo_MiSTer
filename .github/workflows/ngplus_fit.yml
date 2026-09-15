@@ -74,14 +74,23 @@ jobs:
             bash -c '
               set -e
               quartus_sh --set SEED=$SEED NeoGeo
+              set -o pipefail
               quartus_sh --flow compile NeoGeo 2>&1 | tail -40
-              mkdir -p fit_results
-              for f in output_files/*.rbf; do cp "$f" "fit_results/NeoGeoPlus_$(date +%Y%m%d).rbf"; done 2>/dev/null || true
-              cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary fit_results/ 2>/dev/null || true
-              awk '/^Type +: (Setup|Hold)/{t=$0} /^Slack/{if(t){print t" | "$0; t=""}}' output_files/NeoGeo.sta.summary > fit_results/fmax.txt || true
-              grep -c "Timing requirements not met" output_files/NeoGeo.sta.rpt > fit_results/sta_violations.txt || true
-              cat fit_results/fmax.txt
             '
+
+      # Collect on the host: the container script is a single-quoted string,
+      # so anything with quotes of its own lives here.
+      - name: Collect results
+        if: always()
+        run: |
+          mkdir -p fit_results
+          for f in output_files/*.rbf; do cp "$f" "fit_results/NeoGeoPlus_$(date +%Y%m%d).rbf"; done 2>/dev/null || true
+          cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary fit_results/ 2>/dev/null || true
+          awk '/^Type +: (Setup|Hold)/{t=$0} /^Slack/{if(t){print t" | "$0; t=""}}' output_files/NeoGeo.sta.summary > fit_results/slack.txt || true
+          grep -c "Timing requirements not met" output_files/NeoGeo.sta.rpt > fit_results/sta_violations.txt || true
+          echo "== worst slack per clock"; cat fit_results/slack.txt
+          echo "== STA violations: $(cat fit_results/sta_violations.txt)"
+          test -s fit_results/NeoGeo.fit.summary
 
       - uses: actions/upload-artifact@v4
         if: always()
