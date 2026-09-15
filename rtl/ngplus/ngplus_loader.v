@@ -76,7 +76,7 @@ module ngplus_loader #(parameter
     input             dclk,
     input             drst,
     output reg        hdr_cpreq,     // OR into ddram cpreq
-    output reg        hdr_sel,       // cpaddr = IMG_BASE while high
+    output reg        hdr_sel,       // cpaddr = IMG_BASE while high (leads hdr_cpreq by a clock)
     input             cp_busy,
     input             cp_wr,
     input      [63:0] cp_dout,
@@ -129,10 +129,13 @@ always @(posedge dclk) begin
         hdr_sel <= 1'b0; hst <= 2'd0;
     end else begin
         hreq_s <= {hreq_s[1:0], hreq_tgl};
+        // hdr_sel leads hdr_cpreq by a clock: neogeo.sv registers the copy
+        // address it selects, so it is valid when ddram.sv sees the request
         case (hst)
             2'd0: if (hreq_s[2] != hreq_s[1]) begin
-                      hdr_sel <= 1'b1; hdr_cpreq <= 1'b1; hcnt <= 7'd0; hst <= 2'd1;
+                      hdr_sel <= 1'b1; hcnt <= 7'd0; hst <= 2'd3;
                   end
+            2'd3: begin hdr_cpreq <= 1'b1; hst <= 2'd1; end
             2'd1: if (cp_busy) begin hdr_cpreq <= 1'b0; hst <= 2'd2; end
             2'd2: if (!cp_busy) begin hdr_sel <= 1'b0; hdone_tgl <= ~hdone_tgl; hst <= 2'd0; end
             default: hst <= 2'd0;

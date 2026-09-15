@@ -1895,12 +1895,21 @@ wire [63:0] ngp_core_din;
 // V / M1 live where the image put them: 64 KiB-aligned bases from the
 // loader (the V window is 32 MiB: V1, then V2 16 MiB after it); the copy
 // port reads the header at the image base, then the regions the memcp
-// records name (cp_src + cur_off)
-wire [27:0] ngp_adpcma_addr = {ngp_v_base[27:16] + {3'd0, ADPCMA_ADDR_LATCH[24:16]}, ADPCMA_ADDR_LATCH[15:0]};
-wire [27:0] ngp_adpcmb_addr = {ngp_v_base[27:16] + {3'd0, ADPCMB_ADDR_LATCH[24:16]}, ADPCMB_ADDR_LATCH[15:0]};
-wire [18:11] ngp_m1_bank    = MA & MROM_MASK[18:11];
-wire [27:0] ngp_m1_addr     = {ngp_m1_base[27:16] + {9'd0, ngp_m1_bank[18:16]}, ngp_m1_bank[15:11], SDA[10:0]};
-wire [27:0] ngp_cpaddr      = ngp_hdr_sel ? NGP_IMG_BASE : (ngp_cp_src + {1'b0, cur_off});
+// records name (cp_src + cur_off).  Every address (and its request toggle)
+// is registered once more so the base adders stay off ddram.sv's
+// cache-compare path: one DDRAM_CLK of extra fetch latency, nothing else.
+wire [18:11] ngp_m1_bank = MA & MROM_MASK[18:11];
+reg  [27:0] ngp_adpcma_addr, ngp_adpcmb_addr, ngp_m1_addr, ngp_cpaddr;
+reg         ngp_adpcma_req, ngp_adpcmb_req, ngp_m1_req;
+always @(posedge DDRAM_CLK) begin
+	ngp_adpcma_addr <= {ngp_v_base[27:16] + {3'd0, ADPCMA_ADDR_LATCH[24:16]}, ADPCMA_ADDR_LATCH[15:0]};
+	ngp_adpcma_req  <= ADPCMA_READ_REQ;
+	ngp_adpcmb_addr <= {ngp_v_base[27:16] + {3'd0, ADPCMB_ADDR_LATCH[24:16]}, ADPCMB_ADDR_LATCH[15:0]};
+	ngp_adpcmb_req  <= ADPCMB_READ_REQ;
+	ngp_m1_addr     <= ngp_lo_sel ? ngp_lo_addr : {ngp_m1_base[27:16] + {9'd0, ngp_m1_bank[18:16]}, ngp_m1_bank[15:11], SDA[10:0]};
+	ngp_m1_req      <= ngp_lo_sel ? ngp_lo_req : z80rd_req;
+	ngp_cpaddr      <= ngp_hdr_sel ? NGP_IMG_BASE : (ngp_cp_src + {1'b0, cur_off});
+end
 ddram DDRAM(
 	.DDRAM_CLK(DDRAM_CLK),
 	.DDRAM_BUSY(ngp_core_busy),
@@ -1928,18 +1937,18 @@ ddram DDRAM(
 `ifdef NGPLUS
 	.rdaddr(ngp_adpcma_addr),
 	.dout(ADPCMA_DOUT),
-	.rd_req(ADPCMA_READ_REQ),
+	.rd_req(ngp_adpcma_req),
 	.rd_ack(ADPCMA_READ_ACK),
 
 	.rdaddr2(ngp_adpcmb_addr),
 	.dout2(ADPCMB_DOUT),
-	.rd_req2(ADPCMB_READ_REQ),
+	.rd_req2(ngp_adpcmb_req),
 	.rd_ack2(ADPCMB_READ_ACK),
 
 	// port 3 is the loader's while it copies the LO ROM (Z80 in reset)
-	.rdaddr3(ngp_lo_sel ? ngp_lo_addr : ngp_m1_addr),
+	.rdaddr3(ngp_m1_addr),
 	.dout3(M1_ROM_DATA),
-	.rd_req3(ngp_lo_sel ? ngp_lo_req : z80rd_req),
+	.rd_req3(ngp_m1_req),
 	.rd_ack3(z80rd_ack),
 
 	.cpaddr(ngp_cpaddr),

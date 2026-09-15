@@ -86,6 +86,7 @@ jobs:
               quartus_sh --set SEED=$SEED NeoGeo
               set -o pipefail
               quartus_sh --flow compile NeoGeo 2>&1 | tail -40
+              quartus_sta -t .github/sta_paths.tcl 2>&1 | tail -5 || true
             '
 
       # Collect on the host: the container script is a single-quoted string,
@@ -96,7 +97,7 @@ jobs:
           mkdir -p fit_results
           suffix=""; [ "${{ inputs.dbg }}" = "1" ] && suffix="_DBG"
           for f in output_files/*.rbf; do cp "$f" "fit_results/NeoGeoPlus${suffix}_$(date +%Y%m%d).rbf"; done 2>/dev/null || true
-          cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary fit_results/ 2>/dev/null || true
+          cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary output_files/sta_paths*.txt fit_results/ 2>/dev/null || true
           awk '/^Type +: (Setup|Hold)/{t=$0} /^Slack/{if(t){print t" | "$0; t=""}}' output_files/NeoGeo.sta.summary > fit_results/slack.txt || true
           grep -c "Timing requirements not met" output_files/NeoGeo.sta.rpt > fit_results/sta_violations.txt || true
           echo "== worst slack per clock"; cat fit_results/slack.txt
