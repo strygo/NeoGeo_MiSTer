@@ -1,11 +1,14 @@
 
 # [SNK Neo Geo](https://en.wikipedia.org/wiki/Neo_Geo_(system)) for [MiSTer Platform](https://github.com/MiSTer-devel/Main_MiSTer/wiki) 
 
-> **NG+ fork (branch `ngplus`).** Plays the Neo Geo CD arranged soundtracks
-> under MVS/AES cartridge games from a pack staged by the stock ROM-set
-> loader (no firmware changes). Macro-gated `NGPLUS` edits in `neogeo.sv`
-> and `rtl/ngplus/`; design, tests and packs live in the capcom repo's
-> `ngplus/` folder. Strip the `NGPLUS` lines from `files.qip` for a stock build.
+> **NG+ fork (branch `ngplus`).** Its own core (`NGPLUS`) that plays the Neo
+> Geo CD arranged soundtracks under MVS/AES cartridge games. It loads one
+> kit-built image per title (BIOS + game + arranged pack, `.nga`) through a
+> plain OSD file entry from a `_Neo Geo (Arrange Audio)` launcher folder, so
+> nothing in the stock core's setup is touched. Macro-gated `NGPLUS` edits in
+> `neogeo.sv` and `rtl/ngplus/`; the kit, design and tests live in the capcom
+> repo's `ngplus/` folder. Strip the `NGPLUS` lines from `files.qip` for a
+> stock build.
 
 This is an FPGA implementation of the NEO GEO/MVS system by [Furrtek](https://www.patreon.com/furrtek/posts)
 

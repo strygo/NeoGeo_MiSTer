@@ -117,6 +117,65 @@ video_freak video_freak
 // XXXXXXXXXXXXX XXX XXXXX XXXXXXX  XXXXXXXXXXXXX            XXXXXX 
 
 `include "build_id.v"
+`ifdef NGPLUS
+// NG+: its own core name (the firmware treats it as a generic core: plain
+// file entries, own folders); the game arrives as a kit-built .nga image
+localparam CONF_STR = {
+	"NGPLUS;;",
+	"-;",
+	"F1,NGA,Load Game;",
+	"F2,CPK,Load Arranged Pack;",
+	"S0,SAV,Memory Card;",
+	"-;",
+	"H3OP,FM,ON,OFF;",
+	"H3OQ,ADPCMA,ON,OFF;",
+	"H3OR,ADPCMB,ON,OFF;",
+	"H3OS,PSG,ON,OFF;",
+	"H3oP,ADPCMA CH 1,ON,OFF;",
+	"H3oQ,ADPCMA CH 2,ON,OFF;",
+	"H3oR,ADPCMA CH 3,ON,OFF;",
+	"H3oS,ADPCMA CH 4,ON,OFF;",
+	"H3oT,ADPCMA CH 5,ON,OFF;",
+	"H3oU,ADPCMA CH 6,ON,OFF;",
+	"H3-;",
+	"O1,System Type,Console(AES),Arcade(MVS);",
+	"OM,BIOS,UniBIOS,Original;",
+	"O3,Video Mode,NTSC,PAL;",
+	"-;",
+	"o9A,Input,Joystick or Spinner,Joystick,Spinner,Mouse(Irr.Maze);",
+	"oBC,Multitap,No,NEO-FTC1B,NeoTris;",
+	"-;",
+	"O4,Memory Card,Plugged,Unplugged;",
+	"RL,Reload Memory Card;",
+	"D4RC,Save Memory Card;",
+	"OO,Autosave,OFF,ON;",
+	"H2-;",
+	"H2O7,[DIP] Settings,OFF,ON;",
+	"H2O8,[DIP] Freeplay,OFF,ON;",
+	"H2O9,[DIP] Freeze,OFF,ON;",
+	"-;",
+	"P1,Audio & Video;",
+	"P1-;",
+	"P1OG,Width,320px,304px;",
+	"P1o01,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1OIK,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"P1-;",
+	"d5P1o2,Vertical Crop,Disabled,216p(5x);",
+	"d5P1o36,Crop Offset,0,2,4,8,10,12,-12,-10,-8,-6,-4,-2;",
+	"P1o78,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
+	"P1-;",
+	"P1O56,Stereo Mix,none,25%,50%,100%;",
+	"P1-;",
+	"P1oD,Arranged Audio,ON,OFF;",
+	"P1oEF,Arranged Volume,100%,75%,50%,150%;",
+	"-;",
+	"RE,Reset & apply;",
+	"J1,A,B,C,D,Start,Select,Coin,ABC,A+B,C+D;",
+	"jn,A,B,X,Y,Start,Select,L,R,L2,R2;",
+	"jp,B,A,D,C,Start,Select,L,R,L2,R2;",
+	"V,v",`BUILD_DATE
+};
+`else
 localparam CONF_STR = {
 	"NEOGEO;;",
 	"-;",
@@ -167,9 +226,6 @@ localparam CONF_STR = {
 	"P1-;",
 	"P1O56,Stereo Mix,none,25%,50%,100%;",
 	"P1-;",
-	"H0P1oD,Arranged Audio (NG+),ON,OFF;",
-	"H0P1oEF,Arranged Volume,100%,75%,50%,150%;",
-	"P1-;",
 	"-;",
 	"RE,Reset & apply;",  // decouple manual reset from system reset 
 	"J1,A,B,C,D,Start,Select,Coin,ABC,A+B,C+D;",	// ABC is a special key to press A+B+C at once, useful for keyboards that don't allow more than 2 keypresses at once; A+B/C+D are useful for fighting games (Samurai Shodown, Garou, etc.)
@@ -177,6 +233,7 @@ localparam CONF_STR = {
 	"jp,B,A,D,C,Start,Select,L,R,L2,R2;",	// positional mapping consistent with NeoGeoCD controller
 	"V,v",`BUILD_DATE						// 
 };
+`endif
 
 
 ////////////////////   CLOCKS   ///////////////////
@@ -264,6 +321,8 @@ reg [14:0] TRASH_ADDR;
 reg SYSTEM_TYPE, SYSTEM_CD_TYPE;
 
 reg nRESET_CORE;
+wire ngp_loading;   // NG+: game image streaming (hold reset); 0 in the stock build
+wire ngp_is_pack;   // NG+: virtual ioctl index 0xff = pack words (DDR pack window)
 always @(posedge CLK_48M) begin
 	reg rst_n;
 	reg got_rom_write = 0;
@@ -275,7 +334,7 @@ always @(posedge CLK_48M) begin
 	rst_n <= &TRASH_ADDR;
 	if(CLK_EN_24M_N && ~&TRASH_ADDR) TRASH_ADDR <= TRASH_ADDR + 1'b1;
 
-	if (status[0] | status[14] | buttons[1] | bk_loading | RESET | ~got_rom_write) begin
+	if (status[0] | status[14] | buttons[1] | bk_loading | RESET | ~got_rom_write | ngp_loading) begin
 		TRASH_ADDR <= 0;
 		SYSTEM_TYPE <= status[1];	// Latch the system type on reset
 		SYSTEM_CD_TYPE <= status[2];
@@ -340,6 +399,12 @@ wire SYSTEM_CDZ = SYSTEM_CDx & SYSTEM_CD_TYPE;
 wire [15:0] sdram_sz;
 wire [21:0] gamma_bus;
 
+`ifdef NGPLUS
+wire        hps_ioctl_wr, hps_ioctl_download;
+wire [26:0] hps_ioctl_addr;
+wire [15:0] hps_ioctl_dout;
+wire  [7:0] hps_ioctl_idx;
+`endif
 hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 (
 	.clk_sys(clk_sys),
@@ -362,11 +427,19 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.gamma_bus(gamma_bus),
 
 	// Loading signals
+`ifdef NGPLUS
+	.ioctl_wr(hps_ioctl_wr),
+	.ioctl_addr(hps_ioctl_addr),
+	.ioctl_dout(hps_ioctl_dout),
+	.ioctl_download(hps_ioctl_download),
+	.ioctl_index(hps_ioctl_idx),
+`else
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_idx),
+`endif
 	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait),
 
 	.sd_lba(sd_lba),
@@ -385,8 +458,32 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.EXT_BUS(EXT_BUS)
 );
 
+`ifdef NGPLUS
+// the router registers index and data together: no extra index delay
+wire [7:0] ioctl_index = ioctl_idx;
+
+wire        ngp_img_done, ngp_pack_present;
+wire [27:0] ngp_paddr;
+wire [31:0] ngp_dbg_cfg;
+wire  [4:0] ngp_dbg_region;
+ngplus_router NGP_ROUTER (
+	.clk(clk_sys), .rst(RESET), .bios_uni(~status[22]),
+	.hps_download(hps_ioctl_download), .hps_index(hps_ioctl_idx), .hps_wr(hps_ioctl_wr),
+	.hps_addr(hps_ioctl_addr), .hps_dout(hps_ioctl_dout),
+	.v_download(ioctl_download), .v_index(ioctl_idx), .v_wr(ioctl_wr),
+	.v_addr(ioctl_addr), .v_dout(ioctl_dout),
+	.img_done(ngp_img_done), .pack_present(ngp_pack_present), .v_paddr(ngp_paddr),
+	.dbg_cfg(ngp_dbg_cfg), .dbg_region(ngp_dbg_region)
+);
+assign ngp_loading = hps_ioctl_download & (hps_ioctl_idx == 8'd1);
+assign ngp_is_pack = (ioctl_index == 8'hff);
+`else
 reg [7:0] ioctl_index;
 always @(posedge clk_sys) ioctl_index <= ioctl_idx;
+wire [27:0] ngp_paddr = 28'd0;
+assign ngp_loading = 1'b0;
+assign ngp_is_pack = 1'b0;
+`endif
 
 reg dbg_menu = 0;
 always @(posedge clk_sys) begin
@@ -559,9 +656,10 @@ assign sd_wr[1]       = 0;
 assign sd_buff_din[1] = 0;
 assign sd_lba[1]      = 0;
 
-wire downloading = status[0];
+wire downloading = status[0] | ngp_loading;
 reg bk_rd, bk_wr;
 reg bk_ena = 0;
+reg ngp_sav_ok = 0;
 reg bk_pending = 0;
 reg [31:0] bk_lba;
 
@@ -588,6 +686,11 @@ always @(posedge clk_sys) begin
 
 	// Save file always mounted in the end of downloading state.
 	if(downloading && img_mounted[0] && !img_readonly) bk_ena <= 1;
+`ifdef NGPLUS
+	// NG+: the launcher mounts the save BEFORE the image streams
+	if (img_mounted[0]) ngp_sav_ok <= ~img_readonly & (img_size != 0);
+	if (downloading && ngp_sav_ok) bk_ena <= 1;
+`endif
 
 	// Determine whether file needs to be written
 	if (bk_change)     bk_pending <= 1;
@@ -828,7 +931,7 @@ wire [15:0] sdram_din;
 reg ioctl_en;
 always_ff @(posedge clk_sys) begin
 	ioctl_en <= SYSTEM_CDx ? (ioctl_index == INDEX_SPROM) :
-					(ioctl_index != INDEX_LOROM && ioctl_index != INDEX_M1ROM && ioctl_index != INDEX_MEMCP && (ioctl_index < INDEX_VROMS || ioctl_index >= INDEX_CROMS));
+					(ioctl_index != INDEX_LOROM && ioctl_index != INDEX_M1ROM && ioctl_index != INDEX_MEMCP && (ioctl_index < INDEX_VROMS || ioctl_index >= INDEX_CROMS) && !ngp_is_pack);
 end
 
 wire [26:0] CROM_LOAD_ADDR = ({ioctl_addr[25:0], 1'b0} + {ioctl_index[7:1]-INDEX_CROMS[7:1], 18'h00000, ioctl_index[0], 1'b0});
@@ -875,7 +978,7 @@ always_ff @(posedge clk_sys) begin
 	end
 
 	if(ioctl_wr) begin
-			  if(ioctl_index >= INDEX_CROMS)  CROM_MASK  <= CROM_MASK  | CROM_LOAD_ADDR;
+			  if(ioctl_index >= INDEX_CROMS && !ngp_is_pack)  CROM_MASK  <= CROM_MASK  | CROM_LOAD_ADDR;
 		else if(ioctl_index >= INDEX_VROMS) begin
 			if(~VROM_LOAD_ADDR[24]) 			 V1ROM_MASK <= V1ROM_MASK | VROM_LOAD_ADDR;
 			else  									 V2ROM_MASK <= V2ROM_MASK | VROM_LOAD_ADDR;
@@ -1666,7 +1769,8 @@ reg adpcm_wr, adpcm_rd;
 reg old_download, old_reset, old_CD_TR_WR_PCM;
 wire adpcm_wrack, adpcm_rdack;
 
-wire ddr_loading = ioctl_download & (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM));
+wire ddr_loading = ioctl_download & (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM) | ngp_is_pack);
+localparam [27:0] NGP_PACK_REL = 28'h3000000;   // pack window 0x33000000 relative to the DDR base
 reg ddram_wait = 0;
 reg ddram_dtack;
 
@@ -1690,7 +1794,7 @@ begin
 	if (ddr_loading & ioctl_wr) begin
 		ddram_wait <= 1;
 		adpcm_wr <= ~adpcm_wr;
-		ddr_waddr <= (ioctl_index == INDEX_M1ROM) ? {1'b1,ioctl_addr[24:0]} : VROM_LOAD_ADDR;
+		ddr_waddr <= ngp_is_pack ? (NGP_PACK_REL + ngp_paddr) : (ioctl_index == INDEX_M1ROM) ? {1'b1,ioctl_addr[24:0]} : VROM_LOAD_ADDR;
 		ddr_wr_din <= ioctl_dout;
 		ddr_we_byte <= 0;
 	end else if (~old_CD_TR_WR_PCM & CD_TR_WR_PCM) begin // CD write to PCM
@@ -1875,26 +1979,18 @@ wire [26:0] cp_offset =
 										 27'd0;
 
 `ifdef NGPLUS
-// NG+: the arranged-audio pack is the last <file> of the game's romsets.xml
-// entry, with a spare index the cart loader never maps.  The stock loader
-// stages it whole at 0x38000000 and sends the usual copy record; the fork
-// keeps it in DDR (header at 0x38040000, behind a 256 KiB pad for the
-// system ROM / SFIX staged after it) and never copies it to SDRAM.
-localparam [7:0] NGP_PACK_INDEX = 8'd12;
+// NG+: a pack is present when the last image (or bare pack) load carried one
 reg ngp_pack_valid = 0;
-reg ngp_ioctl_dl_d = 0;
+always @(posedge clk_sys) begin
+	if (RESET) ngp_pack_valid <= 0;
+	else if (ngp_img_done) ngp_pack_valid <= ngp_pack_present;
+end
 `endif
 reg memcp_req = 0;
 reg memcp_ack = 0;
 wire memcp_wait = (memcp_req != memcp_ack);
 
 always @(posedge clk_sys) begin
-`ifdef NGPLUS
-	// a direct load (.neo, index 1) bypasses the copy records: drop the pack
-	ngp_ioctl_dl_d <= ioctl_download;
-	if (ioctl_download && !ngp_ioctl_dl_d && ioctl_index == INDEX_LOROM) ngp_pack_valid <= 0;
-	if (RESET) ngp_pack_valid <= 0;
-`endif
 	if(ioctl_download && ioctl_index == INDEX_MEMCP) begin
 		if(ioctl_wr) begin
 			case(ioctl_addr[3:0])
@@ -1905,19 +2001,7 @@ always @(posedge clk_sys) begin
 						cp_addr     <= cp_offset;
 						cp_end      <= cp_offset + {ioctl_dout[10:0], cp_size[15:0]};
 					end
-				6: if(ioctl_dout && cp_op) begin
-`ifdef NGPLUS
-						if (cp_idx == NGP_PACK_INDEX) ngp_pack_valid <= 1;
-						else begin
-							// any other record but the BIOS pair staged after the
-							// pack (system ROM, SFIX) means a new ROM set: drop it
-							if (cp_idx != INDEX_SPROM && cp_idx != INDEX_SFIXROM) ngp_pack_valid <= 0;
-							memcp_req <= ~memcp_req;
-						end
-`else
-						memcp_req <= ~memcp_req;
-`endif
-					end
+				6: if(ioctl_dout && cp_op) memcp_req <= ~memcp_req;
 			endcase
 
 			if(~cp_op) begin
@@ -1990,24 +2074,27 @@ jt10 YM2610(
 // Arranged (Neo Geo CD) soundtrack for cartridge games, played from a CPS+
 // pack in DDR.  Contract: ngplus/RTL_CONTRACT.md (capcom repo).  Everything
 // game-specific is pack data; with no pack staged this block is inert.
-localparam [31:0] NGP_PACK_BASE = 32'h3804_0000;	// staging + 256 KiB pad
+localparam [31:0] NGP_PACK_BASE = 32'h3300_0000;	// DDR pack window (image router / OSD pack load)
 
 wire       ngp_osd_on = ~status[45];				// OSD: Arranged Audio ON/OFF
 wire [1:0] ngp_vol    = status[47:46];			// OSD: Arranged Volume
 
-// ---- pack presence / boot (96 MHz).  The pack arrives while the core is in
-// reset (ROM download); the loader boots after every reset release while a
-// pack is staged, and fails open on a bad magic (new set staged over it).
-reg  [2:0] ngp_rst_s;
+// ---- pack presence / boot (96 MHz).  The pack streams into the DDR window
+// while the core is held in reset (image load); the loader boots after every
+// reset release while a pack is present, and after an OSD pack load.
+reg  [2:0] ngp_rst_s, ngp_done_s;
 reg  [1:0] ngp_valid_s;
 reg  [4:0] ngp_boot_cnt;
 reg        ngp_boot_go;
 wire       ngp_rst = ngp_rst_s[2];
 always @(posedge CLK_96M) begin
 	ngp_rst_s   <= {ngp_rst_s[1:0], ~nRESET};
+	ngp_done_s  <= {ngp_done_s[1:0], ngp_img_done};
 	ngp_valid_s <= {ngp_valid_s[0], ngp_pack_valid};
 	ngp_boot_go <= 0;
-	if (ngp_rst) ngp_boot_cnt <= 5'd16;
+	// boot 16 clocks after reset release (image load) or after a pack load
+	// while the game runs (OSD "Load Arranged Pack")
+	if (ngp_rst || (ngp_done_s[1] & ~ngp_done_s[2])) ngp_boot_cnt <= 5'd16;
 	else if (ngp_boot_cnt != 0) begin
 		ngp_boot_cnt <= ngp_boot_cnt - 1'd1;
 		if (ngp_boot_cnt == 5'd1 && ngp_valid_s[1]) ngp_boot_go <= 1;
