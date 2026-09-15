@@ -78,8 +78,7 @@ jobs:
               mkdir -p fit_results
               for f in output_files/*.rbf; do cp "$f" "fit_results/NeoGeoPlus_$(date +%Y%m%d).rbf"; done 2>/dev/null || true
               cp output_files/NeoGeo.fit.summary output_files/NeoGeo.sta.rpt output_files/NeoGeo.sta.summary fit_results/ 2>/dev/null || true
-              grep -A12 "Slow 1100mV 85C Model Fmax Summary" output_files/NeoGeo.sta.rpt | head -40 > fit_results/fmax.txt || true
-              grep -B2 -A8 "Setup.*Worst-case" output_files/NeoGeo.sta.summary >> fit_results/fmax.txt || true
+              awk '/^Type +: (Setup|Hold)/{t=$0} /^Slack/{if(t){print t" | "$0; t=""}}' output_files/NeoGeo.sta.summary > fit_results/fmax.txt || true
               grep -c "Timing requirements not met" output_files/NeoGeo.sta.rpt > fit_results/sta_violations.txt || true
               cat fit_results/fmax.txt
             '
