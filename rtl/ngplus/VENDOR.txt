@@ -1,4 +1,4 @@
-vendored 2026-09-15T21:33Z
-capcom  e778e88e  ngplus/rtl
-capcom  e778e88e  cpsplus/rtl (cpsplus_ddr/player/adx, xf_lut)
+vendored 2026-09-15T22:35Z
+capcom  e088eb84  ngplus/rtl
+capcom  e088eb84  cpsplus/rtl (cpsplus_ddr/player/adx, xf_lut)
 jtcores b9bb1fe56  modules/jtframe/hdl/clocking/jtframe_frac_cen.v

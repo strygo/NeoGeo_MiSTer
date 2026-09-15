@@ -124,8 +124,8 @@ video_freak video_freak
 localparam CONF_STR = {
 	"NG+;;",
 	"-;",
-	"F1,NGA,Load Game;",
-	"F2,CPK,Load Arranged Pack;",
+	"F1,NGA,Load Game,30000000;",
+	"F2,CPK,Load Arranged Pack,38000000;",
 	"S0,SAV,Memory Card;",
 	"-;",
 	"H3OP,FM,ON,OFF;",
@@ -322,10 +322,9 @@ reg [14:0] TRASH_ADDR;
 reg SYSTEM_TYPE, SYSTEM_CD_TYPE;
 
 reg nRESET_CORE;
-wire ngp_loading;   // NG+: game image streaming (hold reset); 0 in the stock build
-wire ngp_is_pack;   // NG+: virtual ioctl index 0xff = pack words (DDR pack window)
+wire ngp_loading;   // NG+: game image load in progress (hold reset); 0 in the stock build
 wire ngp_img_start; // NG+: image load begins (reset masks / C base like status[0])
-wire ngp_wait;      // NG+: router segment switch or DDR writer back-pressure
+wire ngp_fill;      // NG+: apply the mask-fill step (stock: while status[0])
 always @(posedge CLK_48M) begin
 	reg rst_n;
 	reg got_rom_write = 0;
@@ -443,7 +442,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_idx),
 `endif
-	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait | ngp_wait),
+	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait),
 
 	.sd_lba(sd_lba),
 	.sd_rd(sd_rd),
@@ -462,34 +461,28 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 );
 
 `ifdef NGPLUS
-// the router registers index and data together: no extra index delay
+// the loader registers index and data together: no extra index delay
 wire [7:0] ioctl_index = ioctl_idx;
 
-wire        ngp_img_done, ngp_pack_present;
-wire [27:0] ngp_paddr;
+// NG+: the image is DDR-resident.  The OSD entry carries the load address
+// (0x30000000 = DDR offset 0), so the firmware writes the whole .nga into
+// DDR through shared memory and the core sees an empty download; at its
+// end ngplus_loader (instantiated in the NG+ block below) reads the header
+// from DDR, emits the config / memcp records the stock loader would have
+// sent, copies the LO ROM, and publishes where V / M1 / the pack live.
+localparam [27:0] NGP_IMG_BASE = 28'h0000000;
+wire        ngp_img_done, ngp_pack_present, ngp_busy, ngp_dbg_err;
+wire [27:0] ngp_cp_src, ngp_v_base, ngp_m1_base, ngp_pack_base, ngp_lo_addr;
+wire        ngp_hdr_cpreq, ngp_hdr_sel, ngp_lo_sel, ngp_lo_req;
 wire [31:0] ngp_dbg_cfg;
-wire  [4:0] ngp_dbg_region;
-ngplus_router NGP_ROUTER (
-	.clk(clk_sys), .rst(RESET), .bios_uni(~status[22]),
-	.hps_download(hps_ioctl_download), .hps_index(hps_ioctl_idx), .hps_wr(hps_ioctl_wr),
-	.hps_addr(hps_ioctl_addr), .hps_dout(hps_ioctl_dout), .v_wait(ngp_v_wait),
-	.v_download(ioctl_download), .v_index(ioctl_idx), .v_wr(ioctl_wr),
-	.v_addr(ioctl_addr), .v_dout(ioctl_dout), .v_paddr(ngp_paddr),
-	.img_start(ngp_img_start), .img_done(ngp_img_done), .pack_present(ngp_pack_present),
-	.dbg_cfg(ngp_dbg_cfg), .dbg_region(ngp_dbg_region)
-);
-wire ngp_v_wait, ngp_wr_busy;
-assign ngp_loading = hps_ioctl_download & (hps_ioctl_idx == 8'd1);
-assign ngp_is_pack = (ioctl_index == 8'hff);
-assign ngp_wait    = ngp_v_wait | ngp_wr_busy;
+wire  [4:0] ngp_dbg_region, ngp_dbg_state;
+assign ngp_loading = (hps_ioctl_download & (hps_ioctl_idx == 8'd1)) | ngp_busy;
 `else
 reg [7:0] ioctl_index;
 always @(posedge clk_sys) ioctl_index <= ioctl_idx;
-wire [27:0] ngp_paddr = 28'd0;
 assign ngp_loading   = 1'b0;
-assign ngp_is_pack   = 1'b0;
 assign ngp_img_start = 1'b0;
-assign ngp_wait      = 1'b0;
+assign ngp_fill      = 1'b0;
 `endif
 
 reg dbg_menu = 0;
@@ -938,7 +931,7 @@ wire [15:0] sdram_din;
 reg ioctl_en;
 always_ff @(posedge clk_sys) begin
 	ioctl_en <= SYSTEM_CDx ? (ioctl_index == INDEX_SPROM) :
-					(ioctl_index != INDEX_LOROM && ioctl_index != INDEX_M1ROM && ioctl_index != INDEX_MEMCP && (ioctl_index < INDEX_VROMS || ioctl_index >= INDEX_CROMS) && !ngp_is_pack);
+					(ioctl_index != INDEX_LOROM && ioctl_index != INDEX_M1ROM && ioctl_index != INDEX_MEMCP && (ioctl_index < INDEX_VROMS || ioctl_index >= INDEX_CROMS));
 end
 
 wire [26:0] CROM_LOAD_ADDR = ({ioctl_addr[25:0], 1'b0} + {ioctl_index[7:1]-INDEX_CROMS[7:1], 18'h00000, ioctl_index[0], 1'b0});
@@ -970,7 +963,7 @@ always_ff @(posedge clk_sys) begin
 
 	old_rst <= status[0];
 
-	if(status[0]) begin
+	if(status[0] | ngp_fill) begin
 		if (SYSTEM_CDx) begin
 			CROM_MASK  <= 27'h3FFFFF; // 4MB
 			V1ROM_MASK <= 27'hFFFFF;  // 1MB
@@ -985,8 +978,8 @@ always_ff @(posedge clk_sys) begin
 	end
 
 	if(ioctl_wr) begin
-			  if(ioctl_index >= INDEX_CROMS && !ngp_is_pack)  CROM_MASK  <= CROM_MASK  | CROM_LOAD_ADDR;
-		else if(ioctl_index >= INDEX_VROMS && !ngp_is_pack) begin
+			  if(ioctl_index >= INDEX_CROMS)  CROM_MASK  <= CROM_MASK  | CROM_LOAD_ADDR;
+		else if(ioctl_index >= INDEX_VROMS) begin
 			if(~VROM_LOAD_ADDR[24]) 			 V1ROM_MASK <= V1ROM_MASK | VROM_LOAD_ADDR;
 			else  									 V2ROM_MASK <= V2ROM_MASK | VROM_LOAD_ADDR;
 		end
@@ -1777,24 +1770,8 @@ reg old_download, old_reset, old_CD_TR_WR_PCM;
 wire adpcm_wrack, adpcm_rdack;
 
 `ifdef NGPLUS
-// NG+: V ROMs, M1 and the pack are written by ngplus_ddrwr (64-bit words,
-// one handshake per four ioctl words); the per-word path below stays idle
-localparam [27:0] NGP_PACK_REL = 28'h3000000;   // pack window 0x33000000 relative to the DDR base
-wire        ngp_ddr_word = ioctl_download & ioctl_wr &
-                           (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM) | ngp_is_pack);
-wire [27:0] ngp_ddr_addr = ngp_is_pack ? (NGP_PACK_REL + ngp_paddr) :
-                           (ioctl_index == INDEX_M1ROM) ? {3'b001, ioctl_addr[24:0]} : {1'b0, VROM_LOAD_ADDR};
-reg         ngp_hps_dl_d;
-always @(posedge clk_sys) ngp_hps_dl_d <= hps_ioctl_download;
-wire        ngp_pw_we, ngp_pw_busy;
-wire [28:0] ngp_pw_addr;
-wire [63:0] ngp_pw_din;
-wire  [7:0] ngp_pw_be;
-ngplus_ddrwr NGP_DDRWR (
-	.clk(clk_sys), .rst(RESET), .wr(ngp_ddr_word), .addr(ngp_ddr_addr), .din(ioctl_dout),
-	.flush(ngp_hps_dl_d & ~hps_ioctl_download), .busy(ngp_wr_busy),
-	.dclk(DDRAM_CLK), .drst(RESET), .d_we(ngp_pw_we), .d_addr(ngp_pw_addr), .d_din(ngp_pw_din), .d_be(ngp_pw_be), .d_busy(ngp_pw_busy)
-);
+// NG+: V ROMs and M1 are DDR-resident where the firmware wrote the image;
+// nothing goes through the per-word write path below
 wire ddr_loading = 1'b0;
 `else
 wire ddr_loading = ioctl_download & (((ioctl_index >= INDEX_VROMS) & (ioctl_index < INDEX_CROMS)) | (ioctl_index == INDEX_M1ROM));
@@ -1915,6 +1892,15 @@ wire [28:0] ngp_core_addr;
 wire        ngp_core_rd, ngp_core_we, ngp_core_busy, ngp_core_dout_ready;
 wire  [7:0] ngp_core_be;
 wire [63:0] ngp_core_din;
+// V / M1 live where the image put them: 64 KiB-aligned bases from the
+// loader (the V window is 32 MiB: V1, then V2 16 MiB after it); the copy
+// port reads the header at the image base, then the regions the memcp
+// records name (cp_src + cur_off)
+wire [27:0] ngp_adpcma_addr = {ngp_v_base[27:16] + {3'd0, ADPCMA_ADDR_LATCH[24:16]}, ADPCMA_ADDR_LATCH[15:0]};
+wire [27:0] ngp_adpcmb_addr = {ngp_v_base[27:16] + {3'd0, ADPCMB_ADDR_LATCH[24:16]}, ADPCMB_ADDR_LATCH[15:0]};
+wire [18:11] ngp_m1_bank    = MA & MROM_MASK[18:11];
+wire [27:0] ngp_m1_addr     = {ngp_m1_base[27:16] + {9'd0, ngp_m1_bank[18:16]}, ngp_m1_bank[15:11], SDA[10:0]};
+wire [27:0] ngp_cpaddr      = ngp_hdr_sel ? NGP_IMG_BASE : (ngp_cp_src + {1'b0, cur_off});
 ddram DDRAM(
 	.DDRAM_CLK(DDRAM_CLK),
 	.DDRAM_BUSY(ngp_core_busy),
@@ -1939,6 +1925,29 @@ ddram DDRAM(
 	.we_ack(adpcm_wrack),
 	.we_byte(ddr_we_byte),
 	
+`ifdef NGPLUS
+	.rdaddr(ngp_adpcma_addr),
+	.dout(ADPCMA_DOUT),
+	.rd_req(ADPCMA_READ_REQ),
+	.rd_ack(ADPCMA_READ_ACK),
+
+	.rdaddr2(ngp_adpcmb_addr),
+	.dout2(ADPCMB_DOUT),
+	.rd_req2(ADPCMB_READ_REQ),
+	.rd_ack2(ADPCMB_READ_ACK),
+
+	// port 3 is the loader's while it copies the LO ROM (Z80 in reset)
+	.rdaddr3(ngp_lo_sel ? ngp_lo_addr : ngp_m1_addr),
+	.dout3(M1_ROM_DATA),
+	.rd_req3(ngp_lo_sel ? ngp_lo_req : z80rd_req),
+	.rd_ack3(z80rd_ack),
+
+	.cpaddr(ngp_cpaddr),
+	.cpdout(ddr_cpdout),
+	.cpwr(ddr_cpwr),
+	.cpreq(ddr_cpreq | ngp_hdr_cpreq),
+	.cpbusy(ddr_cpbusy)
+`else
 	.rdaddr(ADPCMA_ADDR_LATCH),
 	.dout(ADPCMA_DOUT),
 	.rd_req(ADPCMA_READ_REQ),
@@ -1959,6 +1968,7 @@ ddram DDRAM(
 	.cpwr(ddr_cpwr),
 	.cpreq(ddr_cpreq),
 	.cpbusy(ddr_cpbusy)
+`endif
 );
 
 wire [26:0] ddr_cpaddr = cur_off;
@@ -2102,14 +2112,26 @@ jt10 YM2610(
 // Arranged (Neo Geo CD) soundtrack for cartridge games, played from a CPS+
 // pack in DDR.  Contract: ngplus/RTL_CONTRACT.md (capcom repo).  Everything
 // game-specific is pack data; with no pack staged this block is inert.
-localparam [31:0] NGP_PACK_BASE = 32'h3300_0000;	// DDR pack window (image router / OSD pack load)
+ngplus_loader #(.IMG_BASE(NGP_IMG_BASE)) NGP_LOADER (
+	.clk(clk_sys), .rst(RESET), .bios_uni(~status[22]),
+	.hps_download(hps_ioctl_download), .hps_index(hps_ioctl_idx), .hps_wr(hps_ioctl_wr),
+	.hps_addr(hps_ioctl_addr), .hps_dout(hps_ioctl_dout),
+	.v_download(ioctl_download), .v_index(ioctl_idx), .v_wr(ioctl_wr), .v_addr(ioctl_addr), .v_dout(ioctl_dout),
+	.cp_src(ngp_cp_src), .memcp_wait(memcp_wait),
+	.dclk(DDRAM_CLK), .drst(RESET), .hdr_cpreq(ngp_hdr_cpreq), .hdr_sel(ngp_hdr_sel),
+	.cp_busy(ddr_cpbusy), .cp_wr(ddr_cpwr), .cp_dout(ddr_cpdout),
+	.lo_sel(ngp_lo_sel), .lo_req(ngp_lo_req), .lo_addr(ngp_lo_addr), .lo_ack(z80rd_ack), .lo_dout(M1_ROM_DATA),
+	.busy(ngp_busy), .fill(ngp_fill), .img_start(ngp_img_start), .img_done(ngp_img_done), .pack_present(ngp_pack_present),
+	.v_base(ngp_v_base), .m1_base(ngp_m1_base), .pack_base(ngp_pack_base),
+	.dbg_cfg(ngp_dbg_cfg), .dbg_region(ngp_dbg_region), .dbg_state(ngp_dbg_state), .dbg_err(ngp_dbg_err)
+);
 
 wire       ngp_osd_on = ~status[45];				// OSD: Arranged Audio ON/OFF
 wire [1:0] ngp_vol    = status[47:46];			// OSD: Arranged Volume
 
-// ---- pack presence / boot (96 MHz).  The pack streams into the DDR window
-// while the core is held in reset (image load); the loader boots after every
-// reset release while a pack is present, and after an OSD pack load.
+// ---- pack presence / boot (96 MHz).  The pack is part of the DDR-resident
+// image (or a bare OSD pack load at 0x38000000); the player boots after
+// every reset release while a pack is present, and after an OSD pack load.
 reg  [2:0] ngp_rst_s, ngp_done_s;
 reg  [1:0] ngp_valid_s;
 reg  [4:0] ngp_boot_cnt;
@@ -2168,7 +2190,7 @@ ngplus_top #(.XF_LUT_FILE("rtl/ngplus/cpsplus_xf_lut.hex")) NGPLUS (
 	.cen_frame(ngp_cen_frame), .osd_pause(1'b0), .vol(ngp_vol),
 	.audio_l(ngp_audio_l), .audio_r(ngp_audio_r),
 	.sample_vld(ngp_sample_vld), .playing(ngp_playing),
-	.base_addr(NGP_PACK_BASE), .osd_en(ngp_osd_on & ngp_valid_s[1]), .boot_go(ngp_boot_go),
+	.base_addr({4'b0011, ngp_pack_base}), .osd_en(ngp_osd_on & ngp_valid_s[1]), .boot_go(ngp_boot_go),
 	.ready(ngp_ready), .magic_ok(ngp_magic_ok), .status(ngp_status),
 	.last_cmd(ngp_last_cmd), .last_mapped(ngp_last_mapped),
 	.last_verb(ngp_last_verb), .last_ctrl(ngp_last_ctrl),
@@ -2187,7 +2209,6 @@ ngplus_ddrmux NGP_DDRMUX (
 	.core_busy(ngp_core_busy), .core_dout_ready(ngp_core_dout_ready),
 	.pk_burstcnt(ngp_pk_burstcnt), .pk_addr(ngp_pk_addr), .pk_rd(ngp_pk_rd),
 	.pk_busy(ngp_pk_busy), .pk_dout_ready(ngp_pk_dout_ready),
-	.pw_we(ngp_pw_we), .pw_addr(ngp_pw_addr), .pw_din(ngp_pw_din), .pw_be(ngp_pw_be), .pw_busy(ngp_pw_busy),
 	.ddr_busy(DDRAM_BUSY), .ddr_dout_ready(DDRAM_DOUT_READY),
 	.ddr_burstcnt(DDRAM_BURSTCNT), .ddr_addr(DDRAM_ADDR), .ddr_rd(DDRAM_RD),
 	.ddr_we(DDRAM_WE), .ddr_be(DDRAM_BE), .ddr_din(DDRAM_DIN)
