@@ -5,7 +5,8 @@
 > Geo CD arranged soundtracks under MVS/AES cartridge games. It loads one
 > kit-built image per title (BIOS + game + arranged pack, `.nga`) through a
 > plain OSD file entry with a DDR load address (the firmware writes it into
-> DDR like a CPS+ MRA; `games/NG+`, launchers under `_Console/_NG+`), so
+> DDR like a CPS+ MRA; `games/NG+`, launchers under
+> `_Arcade/_Arcade Patches/_Arrangements/_NG+`), so
 > nothing in the stock core's setup is touched. Macro-gated `NGPLUS` edits in
 > `neogeo.sv` and `rtl/ngplus/`; the kit, design and tests live in the capcom
 > repo's `ngplus/` folder. Strip the `NGPLUS` lines from `files.qip` for a
