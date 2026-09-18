@@ -124,9 +124,11 @@ video_freak video_freak
 localparam CONF_STR = {
 	"NG+;;",
 	"-;",
-	"F1,NGA,Load Game,30000000;",
-	"F2,CPK,Load Arranged Pack,38000000;",
-	"S0,SAV,Memory Card;",
+	// One entry, and only until a game is loaded (menumask bit 6): NG+ titles
+	// arrive from their launcher, not from the OSD.  FS gives the firmware the
+	// save: it mounts saves/NG+/<image>.sav at the end of the load and creates
+	// it on the first write, as the stock core does.
+	"H6FS1,NGA,Load Game,30000000;",
 	"-;",
 	"H3OP,FM,ON,OFF;",
 	"H3OQ,ADPCMA,ON,OFF;",
@@ -402,6 +404,8 @@ wire [15:0] sdram_sz;
 wire [21:0] gamma_bus;
 
 `ifdef NGPLUS
+// hides the load entry once a game is in (bit 6 of the OSD mask)
+reg  ngp_menu_loaded = 0;
 wire        hps_ioctl_wr, hps_ioctl_download;
 wire [26:0] hps_ioctl_addr;
 wire [15:0] hps_ioctl_dout;
@@ -422,7 +426,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.ps2_key(ps2_key),
 
 	.status(status),				// status read (32 bits)
-	.status_menumask({status[22], 9'd0, en216p, bk_autosave | ~bk_pending, ~dbg_menu,~SYSTEM_MVS,1'b0,SYSTEM_CDx}),
+	.status_menumask({status[22], 8'd0, ngp_menu_loaded, en216p, bk_autosave | ~bk_pending, ~dbg_menu,~SYSTEM_MVS,1'b0,SYSTEM_CDx}),
 
 	.RTC(rtc),
 	.sdram_sz(sdram_sz),
@@ -477,7 +481,12 @@ wire        ngp_hdr_cpreq, ngp_hdr_sel, ngp_lo_sel, ngp_lo_req;
 wire [31:0] ngp_dbg_cfg;
 wire  [4:0] ngp_dbg_region, ngp_dbg_state;
 assign ngp_loading = (hps_ioctl_download & (hps_ioctl_idx == 8'd1)) | ngp_busy;
+always @(posedge clk_sys) begin
+	if (hps_ioctl_download & (hps_ioctl_idx == 8'd1)) ngp_menu_loaded <= 0;
+	else if (ngp_img_done)                            ngp_menu_loaded <= 1;
+end
 `else
+wire ngp_menu_loaded = 1'b0;
 reg [7:0] ioctl_index;
 always @(posedge clk_sys) ioctl_index <= ioctl_idx;
 assign ngp_loading   = 1'b0;
@@ -659,7 +668,6 @@ assign sd_lba[1]      = 0;
 wire downloading = status[0] | ngp_loading;
 reg bk_rd, bk_wr;
 reg bk_ena = 0;
-reg ngp_sav_ok = 0;
 reg bk_pending = 0;
 reg [31:0] bk_lba;
 
@@ -684,13 +692,9 @@ always @(posedge clk_sys) begin
 	old_downloading <= downloading;
 	if(~old_downloading & downloading) bk_ena <= 0;
 
-	// Save file always mounted in the end of downloading state.
+	// Save file always mounted in the end of downloading state (NG+ included:
+	// its FS entry has the firmware mount saves/NG+/<image>.sav there too).
 	if(downloading && img_mounted[0] && !img_readonly) bk_ena <= 1;
-`ifdef NGPLUS
-	// NG+: the launcher mounts the save BEFORE the image streams
-	if (img_mounted[0]) ngp_sav_ok <= ~img_readonly & (img_size != 0);
-	if (downloading && ngp_sav_ok) bk_ena <= 1;
-`endif
 
 	// Determine whether file needs to be written
 	if (bk_change)     bk_pending <= 1;
